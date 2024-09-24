@@ -1,0 +1,209 @@
+#pip install cryptography deap numpy
+
+import os
+import tkinter as tk
+from tkinter import filedialog, messagebox
+from cryptography.hazmat.primitives import hashes, padding
+from cryptography.hazmat.primitives.ciphers import Cipher, algorithms as crypto_algorithms, modes
+from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+from cryptography.hazmat.backends import default_backend
+import base64
+import json
+import hashlib
+from deap import base, creator, tools, algorithms as deap_algorithms
+import numpy as np
+
+# Configuración de la interfaz gráfica
+class SecuritecApp:
+    def __init__(self, master):
+        self.master = master
+        master.title("Securitec by Viaja Tech")
+
+        self.label = tk.Label(master, text="Seleccione una carpeta para encriptar/desencriptar:")
+        self.label.pack(pady=10)
+
+        self.select_button = tk.Button(master, text="Seleccionar Carpeta", command=self.select_folder)
+        self.select_button.pack(pady=5)
+
+        self.encrypt_button = tk.Button(master, text="Encriptar", command=self.encrypt_folder, state=tk.DISABLED)
+        self.encrypt_button.pack(pady=5)
+
+        self.decrypt_button = tk.Button(master, text="Desencriptar", command=self.decrypt_folder, state=tk.DISABLED)
+        self.decrypt_button.pack(pady=5)
+
+        self.status = tk.Label(master, text="Estado: Esperando acción", fg="blue")
+        self.status.pack(pady=10)
+
+        self.selected_folder = ""
+        self.key = None
+
+    def select_folder(self):
+        folder_selected = filedialog.askdirectory()
+        if folder_selected:
+            self.selected_folder = folder_selected
+            self.encrypt_button.config(state=tk.NORMAL)
+            self.decrypt_button.config(state=tk.NORMAL)
+            self.status.config(text=f"Carpeta seleccionada: {self.selected_folder}")
+
+    def encrypt_folder(self):
+        password = self.get_password()
+        if not password:
+            return
+        self.status.config(text="Encriptando...", fg="orange")
+        self.master.update_idletasks()
+        key = derive_key(password)
+        self.key = key
+        try:
+            encrypt_directory(self.selected_folder, key)
+            save_key(self.selected_folder, key)
+            self.status.config(text="Encriptación completada con éxito", fg="green")
+        except Exception as e:
+            messagebox.showerror("Error", f"Error durante la encriptación: {str(e)}")
+            self.status.config(text="Error en la encriptación", fg="red")
+
+    def decrypt_folder(self):
+        key = load_key(self.selected_folder)
+        if not key:
+            messagebox.showerror("Error", "No se encontró una clave para esta carpeta.")
+            return
+        password = self.get_password(confirm=False)
+        if not password:
+            return
+        salt = key[:16]
+        derived_key = derive_key(password, salt=salt)
+        if not constant_time_compare(key, derived_key):
+            messagebox.showerror("Error", "Contraseña incorrecta.")
+            self.status.config(text="Desencriptación fallida", fg="red")
+            return
+        self.status.config(text="Desencriptando...", fg="orange")
+        self.master.update_idletasks()
+        try:
+            decrypt_directory(self.selected_folder, key)
+            self.status.config(text="Desencriptación completada con éxito", fg="green")
+        except Exception as e:
+            messagebox.showerror("Error", f"Error durante la desencriptación: {str(e)}")
+            self.status.config(text="Error en la desencriptación", fg="red")
+
+    def get_password(self, confirm=True):
+        password_window = tk.Toplevel(self.master)
+        password_window.title("Ingresar Contraseña")
+
+        tk.Label(password_window, text="Ingrese una contraseña:").pack(pady=5)
+        password_entry = tk.Entry(password_window, show="*", width=30)
+        password_entry.pack(pady=5)
+
+        if confirm:
+            tk.Label(password_window, text="Confirme la contraseña:").pack(pady=5)
+            confirm_entry = tk.Entry(password_window, show="*", width=30)
+            confirm_entry.pack(pady=5)
+
+        result = {}
+
+        def on_ok():
+            pwd = password_entry.get()
+            if confirm:
+                pwd_confirm = confirm_entry.get()
+                if pwd != pwd_confirm:
+                    messagebox.showerror("Error", "Las contraseñas no coinciden.")
+                    return
+            if not pwd:
+                messagebox.showerror("Error", "La contraseña no puede estar vacía.")
+                return
+            result['password'] = pwd
+            password_window.destroy()
+
+        def on_cancel():
+            password_window.destroy()
+
+        tk.Button(password_window, text="OK", command=on_ok).pack(pady=5)
+        tk.Button(password_window, text="Cancelar", command=on_cancel).pack(pady=5)
+
+        self.master.wait_window(password_window)
+        return result.get('password', None)
+
+# Funciones de encriptación y desencriptación
+def derive_key(password, salt=None):
+    if salt is None:
+        salt = os.urandom(16)
+    # Si salt está proporcionado, se espera que sea bytes
+    kdf = PBKDF2HMAC(
+        algorithm=hashes.SHA256(),
+        length=32,
+        salt=salt,
+        iterations=100000,
+        backend=default_backend()
+    )
+    key = kdf.derive(password.encode())
+    return salt + key  # Retorna bytes: salt + clave derivada
+
+def load_key(folder):
+    key_path = os.path.join(folder, 'securitec_key.json')
+    if not os.path.exists(key_path):
+        return None
+    with open(key_path, 'r') as f:
+        data = json.load(f)
+    return base64.urlsafe_b64decode(data['key'])  # Retorna bytes: salt + clave derivada
+
+def save_key(folder, key):
+    key_path = os.path.join(folder, 'securitec_key.json')
+    with open(key_path, 'w') as f:
+        json.dump({'key': base64.urlsafe_b64encode(key).decode()}, f)
+
+def encrypt_file(file_path, key):
+    key = key
+    salt = key[:16]
+    actual_key = key[16:]
+    iv = os.urandom(16)
+    cipher = Cipher(crypto_algorithms.AES(actual_key), modes.CBC(iv), backend=default_backend())
+    encryptor = cipher.encryptor()
+    padder = padding.PKCS7(128).padder()
+    with open(file_path, 'rb') as f:
+        data = f.read()
+    padded_data = padder.update(data) + padder.finalize()
+    encrypted = encryptor.update(padded_data) + encryptor.finalize()
+    with open(file_path, 'wb') as f:
+        f.write(iv + encrypted)
+
+def decrypt_file(file_path, key):
+    key = key
+    salt = key[:16]
+    actual_key = key[16:]
+    with open(file_path, 'rb') as f:
+        iv = f.read(16)
+        encrypted = f.read()
+    cipher = Cipher(crypto_algorithms.AES(actual_key), modes.CBC(iv), backend=default_backend())
+    decryptor = cipher.decryptor()
+    decrypted_padded = decryptor.update(encrypted) + decryptor.finalize()
+    unpadder = padding.PKCS7(128).unpadder()
+    decrypted = unpadder.update(decrypted_padded) + unpadder.finalize()
+    with open(file_path, 'wb') as f:
+        f.write(decrypted)
+
+def encrypt_directory(folder, key):
+    for root, dirs, files in os.walk(folder):
+        for file in files:
+            if file == 'securitec_key.json':
+                continue
+            file_path = os.path.join(root, file)
+            encrypt_file(file_path, key)
+
+def decrypt_directory(folder, key):
+    for root, dirs, files in os.walk(folder):
+        for file in files:
+            if file == 'securitec_key.json':
+                continue
+            file_path = os.path.join(root, file)
+            decrypt_file(file_path, key)
+
+def constant_time_compare(val1, val2):
+    return hashlib.sha256(val1).digest() == hashlib.sha256(val2).digest()
+
+# Función principal para ejecutar la aplicación
+def main():
+    root = tk.Tk()
+    app = SecuritecApp(root)
+    root.mainloop()
+
+if __name__ == "__main__":
+    main()
+
