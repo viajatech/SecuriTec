@@ -1,0 +1,234 @@
+#pip install cryptography
+#encripta todo
+
+
+
+import os
+import tkinter as tk
+from tkinter import filedialog, messagebox
+from cryptography.hazmat.primitives import hashes, padding
+from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+from cryptography.hazmat.backends import default_backend
+import base64
+import json
+import hashlib
+import sys
+
+# Función para derivar una clave a partir de una contraseña y sal
+def derive_key(password, salt):
+    """
+    Deriva una clave AES de 32 bytes a partir de una contraseña y una sal usando PBKDF2HMAC.
+    """
+    kdf = PBKDF2HMAC(
+        algorithm=hashes.SHA256(),
+        length=32,  # AES-256 requiere una clave de 32 bytes
+        salt=salt,
+        iterations=100000,
+        backend=default_backend()
+    )
+    key = kdf.derive(password.encode())
+    return key
+
+# Función para encriptar un archivo
+def encrypt_file(file_path, key):
+    """
+    Encripta un archivo usando AES en modo CBC con padding PKCS7.
+    """
+    # Generar un IV aleatorio de 16 bytes
+    iv = os.urandom(16)
+    cipher = Cipher(algorithms.AES(key), modes.CBC(iv), backend=default_backend())
+    encryptor = cipher.encryptor()
+    padder = padding.PKCS7(128).padder()
+    
+    # Leer el contenido del archivo
+    with open(file_path, 'rb') as f:
+        data = f.read()
+    
+    # Aplicar padding y encriptar
+    padded_data = padder.update(data) + padder.finalize()
+    encrypted_data = encryptor.update(padded_data) + encryptor.finalize()
+    
+    # Escribir el IV y los datos encriptados de vuelta al archivo con extensión .enc
+    with open(file_path + '.enc', 'wb') as f:
+        f.write(iv + encrypted_data)
+    
+    # Eliminar el archivo original
+    os.remove(file_path)
+
+# Función para desencriptar un archivo
+def decrypt_file(file_path, key):
+    """
+    Desencripta un archivo usando AES en modo CBC con padding PKCS7.
+    """
+    with open(file_path, 'rb') as f:
+        iv = f.read(16)  # Leer el IV
+        encrypted_data = f.read()
+    
+    cipher = Cipher(algorithms.AES(key), modes.CBC(iv), backend=default_backend())
+    decryptor = cipher.decryptor()
+    decrypted_padded = decryptor.update(encrypted_data) + decryptor.finalize()
+    
+    unpadder = padding.PKCS7(128).unpadder()
+    decrypted_data = unpadder.update(decrypted_padded) + unpadder.finalize()
+    
+    # Obtener el nombre original del archivo eliminando la extensión .enc
+    original_file_path = file_path[:-4]
+    
+    # Escribir los datos desencriptados al archivo original
+    with open(original_file_path, 'wb') as f:
+        f.write(decrypted_data)
+    
+    # Eliminar el archivo encriptado
+    os.remove(file_path)
+
+# Función para encriptar todos los archivos en una carpeta
+def encrypt_folder(folder_path, password):
+    """
+    Encripta todos los archivos en la carpeta especificada usando la contraseña proporcionada.
+    """
+    # Generar una sal aleatoria de 16 bytes
+    salt = os.urandom(16)
+    key = derive_key(password, salt)
+    
+    # Guardar la sal en un archivo oculto dentro de la carpeta
+    salt_path = os.path.join(folder_path, '.lock_salt')
+    with open(salt_path, 'wb') as f:
+        f.write(salt)
+    
+    # Recorrer todos los archivos en la carpeta
+    for root, dirs, files in os.walk(folder_path):
+        for file in files:
+            # Ignorar el archivo de sal
+            if file == '.lock_salt':
+                continue
+            file_path = os.path.join(root, file)
+            try:
+                encrypt_file(file_path, key)
+            except Exception as e:
+                messagebox.showerror("Error", f"Error al encriptar {file}: {str(e)}")
+                return False
+    return True
+
+# Función para desencriptar todos los archivos en una carpeta
+def decrypt_folder(folder_path, password):
+    """
+    Desencripta todos los archivos en la carpeta especificada usando la contraseña proporcionada.
+    """
+    # Leer la sal desde el archivo oculto
+    salt_path = os.path.join(folder_path, '.lock_salt')
+    if not os.path.exists(salt_path):
+        messagebox.showerror("Error", "No se encontró el archivo de sal. ¿La carpeta está encriptada?")
+        return False
+    with open(salt_path, 'rb') as f:
+        salt = f.read()
+    
+    key = derive_key(password, salt)
+    
+    # Recorrer todos los archivos en la carpeta
+    for root, dirs, files in os.walk(folder_path):
+        for file in files:
+            # Ignorar el archivo de sal
+            if file == '.lock_salt':
+                continue
+            # Solo desencriptar archivos con extensión .enc
+            if file.endswith('.enc'):
+                file_path = os.path.join(root, file)
+                try:
+                    decrypt_file(file_path, key)
+                except Exception as e:
+                    messagebox.showerror("Error", f"Error al desencriptar {file}: {str(e)}")
+                    return False
+    # Eliminar el archivo de sal después de desencriptar
+    os.remove(salt_path)
+    return True
+
+# Clase para la interfaz gráfica
+class LockApp:
+    def __init__(self, master):
+        self.master = master
+        master.title("Protector de Carpetas")
+        master.geometry("400x250")
+        master.resizable(False, False)
+
+        self.selected_folder = ""
+
+        # Etiqueta para instrucciones
+        self.label = tk.Label(master, text="Seleccione una carpeta para proteger:")
+        self.label.pack(pady=10)
+
+        # Botón para seleccionar carpeta
+        self.select_button = tk.Button(master, text="Seleccionar Carpeta", command=self.select_folder)
+        self.select_button.pack(pady=5)
+
+        # Campo para ingresar contraseña
+        self.pw_label = tk.Label(master, text="Ingrese una contraseña:")
+        self.pw_label.pack(pady=5)
+        self.pw_entry = tk.Entry(master, show="*", width=30)
+        self.pw_entry.pack(pady=5)
+
+        # Campo para confirmar contraseña (solo para encriptar)
+        self.pw_confirm_label = tk.Label(master, text="Confirme la contraseña:")
+        self.pw_confirm_label.pack(pady=5)
+        self.pw_confirm_entry = tk.Entry(master, show="*", width=30)
+        self.pw_confirm_entry.pack(pady=5)
+
+        # Botones para encriptar y desencriptar
+        self.lock_button = tk.Button(master, text="Encriptar Carpeta", command=self.lock_folder, bg="red", fg="white")
+        self.lock_button.pack(pady=10)
+
+        self.unlock_button = tk.Button(master, text="Desencriptar Carpeta", command=self.unlock_folder, bg="green", fg="white")
+        self.unlock_button.pack(pady=5)
+
+    def select_folder(self):
+        folder_selected = filedialog.askdirectory()
+        if folder_selected:
+            self.selected_folder = folder_selected
+            messagebox.showinfo("Carpeta Seleccionada", f"Carpeta seleccionada:\n{self.selected_folder}")
+
+    def lock_folder(self):
+        if not self.selected_folder:
+            messagebox.showerror("Error", "Por favor, seleccione una carpeta primero.")
+            return
+        password = self.pw_entry.get()
+        password_confirm = self.pw_confirm_entry.get()
+        if not password or not password_confirm:
+            messagebox.showerror("Error", "Por favor, ingrese y confirme la contraseña.")
+            return
+        if password != password_confirm:
+            messagebox.showerror("Error", "Las contraseñas no coinciden.")
+            return
+        confirm = messagebox.askyesno("Confirmar Encriptación", f"¿Estás seguro de encriptar todos los archivos en:\n{self.selected_folder}?")
+        if confirm:
+            success = encrypt_folder(self.selected_folder, password)
+            if success:
+                messagebox.showinfo("Éxito", "La carpeta ha sido encriptada exitosamente.")
+                # Limpiar campos
+                self.pw_entry.delete(0, tk.END)
+                self.pw_confirm_entry.delete(0, tk.END)
+
+    def unlock_folder(self):
+        if not self.selected_folder:
+            messagebox.showerror("Error", "Por favor, seleccione una carpeta primero.")
+            return
+        password = self.pw_entry.get()
+        if not password:
+            messagebox.showerror("Error", "Por favor, ingrese la contraseña.")
+            return
+        confirm = messagebox.askyesno("Confirmar Desencriptación", f"¿Estás seguro de desencriptar todos los archivos en:\n{self.selected_folder}?")
+        if confirm:
+            success = decrypt_folder(self.selected_folder, password)
+            if success:
+                messagebox.showinfo("Éxito", "La carpeta ha sido desencriptada exitosamente.")
+                # Limpiar campos
+                self.pw_entry.delete(0, tk.END)
+                self.pw_confirm_entry.delete(0, tk.END)
+
+# Función principal
+def main():
+    root = tk.Tk()
+    app = LockApp(root)
+    root.mainloop()
+
+if __name__ == "__main__":
+    main()
