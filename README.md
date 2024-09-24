@@ -4,3 +4,5 @@
 ![](https://github.com/viajatech/SecuriTec/blob/main/Code%20A%20FOTO.png)
 ------
 ![](https://github.com/viajatech/SecuriTec/blob/main/Code%20C%20FOTO.png)
+------
+![](https://github.com/viajatech/SecuriTec/blob/main/GUI%20PROTECTOR%20VIAJA%20TECH%20FOTO.png)
